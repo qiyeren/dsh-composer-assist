@@ -1,8 +1,8 @@
 {
   "name": "dsh-composer-assist",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
-  "description": "Context-aware composer predictions for DeepSeek Harness, with draft completion, prompt polishing, per-session suggestions and stale-response protection.",
+  "description": "Community-maintained fork of Lphehe/dsh-composer-assist (upstream inactive): fixes the 2026-10-23 review bugs. Context-aware composer predictions, draft completion, prompt polishing, per-session suggestions and stale-response protection.",
   "license": "SEE LICENSE IN LICENSE",
   "exports": {
     ".": "./index.js",
@@ -19,7 +19,9 @@
     "icon.svg",
     "screenshots/*.jpg",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "FORK_NOTICE.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "dsh": ">=0.2.1-rc.2 <0.3.0"
@@ -41,10 +43,16 @@
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Lphehe/dsh-composer-assist.git"
+    "url": "git+https://github.com/qiyeren/dsh-composer-assist.git"
   },
-  "homepage": "https://github.com/Lphehe/dsh-composer-assist",
+  "homepage": "https://github.com/qiyeren/dsh-composer-assist",
   "bugs": {
-    "url": "https://github.com/Lphehe/dsh-composer-assist/issues"
+    "url": "https://github.com/qiyeren/dsh-composer-assist/issues"
+  },
+  "upstream": {
+    "url": "https://github.com/Lphehe/dsh-composer-assist",
+    "pullRequest": "https://github.com/Lphehe/dsh-composer-assist/pull/19",
+    "version": "0.1.1",
+    "license": "source-available, modification prohibited without prior written permission (see LICENSE)"
   }
 }

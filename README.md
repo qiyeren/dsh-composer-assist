@@ -1,4 +1,6 @@
-# 输入框预测 · Composer Assist
+# 输入框预测 · Composer Assist（社区分叉版 0.1.2）
+
+> ⚠️ **本仓库是 [Lphehe/dsh-composer-assist](https://github.com/Lphehe/dsh-composer-assist) 的非官方分叉**（原作者不活跃，修复 PR [#19](https://github.com/Lphehe/dsh-composer-assist/pull/19) 未获回应）。原 LICENSE 禁止未经书面许可的修改/衍生/分发——**安装前请先读 [FORK_NOTICE.md](FORK_NOTICE.md)**，其中完整说明了许可风险、不发布 npm、以及原作者反对即下架的承诺。
 
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供下一条消息预测、草稿补全和提示词润色。根据当前对话给出建议，按 **Tab** 填入输入框，由你决定是否发送。
 
@@ -29,7 +31,7 @@ Predict the next message automatically or on demand, complete a draft, and polis
 Ask the Harness assistant to install this prepacked bundle with `plugin_manager install_bundle`:
 
 ```text
-https://github.com/Lphehe/dsh-composer-assist/releases/download/v0.1.1/dsh-composer-assist.tgz
+https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.2/dsh-composer-assist-0.1.2.tgz
 ```
 
 普通 CLI profile 也可以使用下列命令；把 `web` 替换为你的 profile 名。Desktop 请使用插件管理器。
@@ -37,7 +39,7 @@ https://github.com/Lphehe/dsh-composer-assist/releases/download/v0.1.1/dsh-compo
 For a CLI profile, replace `web` with your profile name. Use Plugin Manager for Desktop.
 
 ```bash
-dsh plugin --profile web add https://github.com/Lphehe/dsh-composer-assist/releases/download/v0.1.1/dsh-composer-assist.tgz
+dsh plugin --profile web add https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.2/dsh-composer-assist-0.1.2.tgz
 ```
 
 也可以克隆本仓库，然后通过 `plugin_manager install_bundle` 安装克隆目录的绝对路径。
@@ -45,7 +47,7 @@ dsh plugin --profile web add https://github.com/Lphehe/dsh-composer-assist/relea
 You can also clone this repository and install its absolute directory path with `plugin_manager install_bundle`.
 
 ```bash
-git clone https://github.com/Lphehe/dsh-composer-assist.git
+git clone https://github.com/qiyeren/dsh-composer-assist.git
 ```
 
 ## 设置 · Settings

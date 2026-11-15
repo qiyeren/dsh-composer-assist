@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased — 外部审查缺陷修复（补丁，待维护者审阅）
+## 0.1.2 — 社区分叉修复版（qiyeren fork，2026-11-15）
 
-本分支是一组针对 2026-10-23 静态审查 issue #1–#13 的低风险修复，**尚未发布**，
-也不代表维护者已接受外部补丁；合并前请按 [LICENSE](LICENSE) 确认授权。
+本版本是一组针对 2026-10-23 静态审查 issue #1–#13 的低风险修复，由**非官方分叉**
+[qiyeren/dsh-composer-assist](https://github.com/qiyeren/dsh-composer-assist) 发布。
+修复同时以 [PR #19](https://github.com/Lphehe/dsh-composer-assist/pull/19) 提交给原作者；
+原作者自 2026-11-03 起无提交、PR 与 13 个 issue 均无回应，故分叉以让修复可安装生效。
+**许可风险见 [FORK_NOTICE.md](FORK_NOTICE.md)**：原 LICENSE 禁止未经书面许可的修改/衍生/
+分发；本分叉不发布 npm、保留 LICENSE 原文、原作者反对即停止分发。
 
 修复（均为 issue 报告的真实缺陷）：
 
@@ -26,6 +30,10 @@
 明确未纳入本补丁（需维护者决策或属架构级改动，见对应 issue）：#1 重拍截图、
 #4 完整文档矩阵、#5 拆模块/引入构建链、#7 多标签页与原子 claim、#9 上游 DOM 契约、
 #10 许可与贡献模式。
+
+分发与验证：0.1.2 打包为 `dsh-composer-assist-0.1.2.tgz` 并附于 fork 的 `v0.1.2` Release；
+`node --check index.js client.js`、`node selfcheck.mjs`、`npm pack --dry-run` 全部通过。
+安装到本机 DSH desktop profile 后，设置页新增「诊断模式」「在上下文里附 Git 状态」两个默认关闭的开关。
 
 ## 0.1.1（tag v0.1.1，b626b67）
 
