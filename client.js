@@ -33,6 +33,7 @@ window.__ModuleLoader__.load({
       'strip.failed.network': '网络或服务不可用',
       'strip.failed.error': '请求失败',
       'strip.retry': '重试',
+      'strip.close': '关闭',
       'settings.lastError': '上次预测失败：',
       'predict.again': '重新预测输入框',
       'predict.short': '预测',
@@ -102,6 +103,7 @@ window.__ModuleLoader__.load({
       'strip.failed.network': 'Network or service unavailable',
       'strip.failed.error': 'Request failed',
       'strip.retry': 'Retry',
+      'strip.close': 'Close',
       'settings.lastError': 'Last prediction failed: ',
       'predict.again': 'Predict input again',
       'predict.short': 'Predict',
@@ -753,6 +755,10 @@ window.__ModuleLoader__.load({
       const askRef = useRef(undefined)
       const sessionIdRef = useRef(sessionId)
       sessionIdRef.current = sessionId
+      // A closed failure must stay hidden during unrelated store updates and
+      // while a previously started request settles. A new request reopens it.
+      const hiddenFailureRef = useRef(undefined)
+      const visibilityEpochRef = useRef(0)
       const pendingRef = useRef(null)
       const draftRef = useRef(draft)
       draftRef.current = draft
@@ -776,7 +782,10 @@ window.__ModuleLoader__.load({
       // Switching conversations restores that session's own suggestion rather than
       // dropping it; a session with none shows nothing.
       useEffect(() => {
+        // Switching sessions retains the existing hide/restore semantics.
+        hiddenFailureRef.current = undefined
         const apply = () => {
+          if (hiddenFailureRef.current === sessionId) return
           const restored = suggestionBySession.get(sessionId) ?? null
           // A fresh object on every publish: the candidate index lives in the module
           // store, so handing React the same reference would skip the re-render and
@@ -825,13 +834,24 @@ window.__ModuleLoader__.load({
         for (const listener of listeners) listener()
       }
 
+      const hideFailure = () => {
+        hiddenFailureRef.current = sessionId
+        visibilityEpochRef.current += 1
+        clear('hide')
+      }
+
       const ask = async (kind, at, cause, source) => {
         const owner = sessionId
+        // A fresh request may display its own result. Older continuations may not
+        // reopen a strip closed since their request started.
+        hiddenFailureRef.current = undefined
+        const visibilityEpoch = ++visibilityEpochRef.current
         reportProbe({ phase: 'request', kind, cause: cause ?? 'unknown', draft: at, owner })
         setFailed(false)
         const startedAt = Date.now()
         await runRequest(kind, owner, at, cause, source)
-        if (sessionIdRef.current === owner) {
+        if (sessionIdRef.current === owner && visibilityEpochRef.current === visibilityEpoch
+          && hiddenFailureRef.current !== owner) {
           const stored = suggestionBySession.get(owner)
           setPending(stored === undefined ? null : { ...stored })
           setBusy(pendingBySession.has(owner))
@@ -1077,6 +1097,17 @@ window.__ModuleLoader__.load({
               whiteSpace: 'nowrap',
             },
           }, t('strip.retry')),
+          failed && h('button', {
+            type: 'button',
+            onClick: () => { hideFailure() },
+            title: t('strip.close'),
+            style: {
+              cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l1)',
+              background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+              borderRadius: '6px', padding: '3px 10px', fontSize: '12px', lineHeight: '1.6',
+              whiteSpace: 'nowrap',
+            },
+          }, t('strip.close')),
           pending !== null && h('button', {
             type: 'button',
             onClick: () => { acceptRef.current?.() },

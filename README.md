@@ -1,4 +1,4 @@
-# 输入框预测 · Composer Assist（社区分叉版 0.1.2）
+# 输入框预测 · Composer Assist（社区分叉版 0.1.3）
 
 > ⚠️ **本仓库是 [Lphehe/dsh-composer-assist](https://github.com/Lphehe/dsh-composer-assist) 的非官方分叉**（原作者不活跃，修复 PR [#19](https://github.com/Lphehe/dsh-composer-assist/pull/19) 未获回应）。原 LICENSE 禁止未经书面许可的修改/衍生/分发——**安装前请先读 [FORK_NOTICE.md](FORK_NOTICE.md)**，其中完整说明了许可风险、不发布 npm、以及原作者反对即下架的承诺。
 
@@ -31,7 +31,7 @@ Predict the next message automatically or on demand, complete a draft, and polis
 Ask the Harness assistant to install this prepacked bundle with `plugin_manager install_bundle`:
 
 ```text
-https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.2/dsh-composer-assist-0.1.2.tgz
+https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.3/dsh-composer-assist-0.1.3.tgz
 ```
 
 普通 CLI profile 也可以使用下列命令；把 `web` 替换为你的 profile 名。Desktop 请使用插件管理器。
@@ -39,7 +39,7 @@ https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.2/dsh-comp
 For a CLI profile, replace `web` with your profile name. Use Plugin Manager for Desktop.
 
 ```bash
-dsh plugin --profile web add https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.2/dsh-composer-assist-0.1.2.tgz
+dsh plugin --profile web add https://github.com/qiyeren/dsh-composer-assist/releases/download/v0.1.3/dsh-composer-assist-0.1.3.tgz
 ```
 
 也可以克隆本仓库，然后通过 `plugin_manager install_bundle` 安装克隆目录的绝对路径。
@@ -73,9 +73,9 @@ Automatic continuation, dynamic workflows, monitoring, roles, and newer decision
 
 ## 自检与反馈 · Self-check and feedback
 
-运行 `node selfcheck.mjs` 可检查解析、学习统计和上下文失败降级；该自检不会调用模型。问题和建议欢迎加入 QQ 群 **1129389677**。
+在源码仓库中运行 `node selfcheck.mjs` 可检查解析、学习统计、上下文失败降级和关闭按钮相关逻辑；该自检不会调用模型。问题和建议欢迎加入 QQ 群 **1129389677**。
 
-Run `node selfcheck.mjs` for parser, learning-counter, and context-fallback checks; it does not call a model. For feedback, join QQ group **1129389677**.
+Run `node selfcheck.mjs` in the source repository for parser, learning-counter, context-fallback and close-button logic checks; it does not call a model. For feedback, join QQ group **1129389677**.
 
 ## 数据流与隐私 · Data flow and privacy
 
@@ -83,7 +83,7 @@ Run `node selfcheck.mjs` for parser, learning-counter, and context-fallback chec
 
 「诊断模式」（默认关闭）用于排查行内预览的对齐问题；关闭时不会有任何诊断上报，Host 也不保留渲染状态。即使开启，上报数据只包含布局数值与阶段标记，**不含草稿文本、候选文本或 ghost 文本**。设置页会显示最近一次预测失败的原因（超时 / 网络 / 其它错误）。
 
-预测失败时建议栏会显示具体原因并提供「重试」，不再静默无结果。
+预测失败时建议栏会显示原因，并提供「重试」和「关闭」；关闭只隐藏建议栏，不修改草稿，也不记录忽略反馈。
 
 Predictions send recent conversation text (bounded), limited text tool results, and **top-level workspace file names**; file contents are never read and credential-shaped names are dropped. Git status is **off by default** — enabling it runs a `git status` child process per prediction. Prediction calls are not appended to the session log. Diagnostics mode (default off) reports layout/phase data only, never draft, candidate or ghost text.
 

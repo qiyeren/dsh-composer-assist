@@ -121,6 +121,107 @@ const sandbox = {
   },
 }
 let clientSource = await readFile(new URL('./client.js', import.meta.url), 'utf8')
+
+// A failed prediction with no candidate must still expose an independent close
+// action. Check the actual rendering branch (not an invented replacement UI).
+const stripStart = clientSource.indexOf('    function SuggestionStrip(')
+const stripEnd = clientSource.indexOf('    function PredictButton(', stripStart)
+assert(stripStart >= 0 && stripEnd > stripStart, 'SuggestionStrip source exists')
+const stripSource = clientSource.slice(stripStart, stripEnd)
+assert(/failed\s*&&\s*h\('button',\s*\{\s*type:\s*'button',\s*onClick:\s*\(\)\s*=>\s*\{\s*hideFailure\(\)\s*\}[\s\S]*?\},\s*t\('strip\.close'\)\)/.test(stripSource),
+  'failure-only suggestion bar must render a close button wired to hideFailure')
+assert(/failed\s*&&\s*h\('button',[\s\S]*?t\('strip\.retry'\)/.test(stripSource),
+  'failure must retain its retry button')
+
+// Execute the real clear callback with and without a saved suggestion. Hiding
+// closes the strip but preserves the stored candidate and leaves draft alone.
+const clearStart = stripSource.indexOf('      const clear = (via) => {')
+const clearEnd = stripSource.indexOf('      const ask = async', clearStart)
+assert(clearStart >= 0 && clearEnd > clearStart, 'SuggestionStrip clear callback exists')
+for (const pending of [null, { kind: 'next', text: 'keep existing candidate' }]) {
+  const state = { pending, busy: true, failed: true, draft: 'keep my draft', invalidations: 0, removed: 0 }
+  const refs = {
+    pending, sessionId: 'close-regression', instanceId: { current: 'test' }, listeners: new Set(),
+    reportProbe() {},
+    nextRequestId() { state.invalidations++ },
+    rememberSuggestion() { state.removed++ },
+    setPending(value) { state.pending = value },
+    setBusy(value) { state.busy = value },
+    setFailed(value) { state.failed = value },
+  }
+  const clear = runInNewContext(`(() => {${stripSource.slice(clearStart, clearEnd)}; return clear })()`, refs)
+  clear('hide')
+  assert.equal(state.pending, null)
+  assert.equal(state.busy, false)
+  assert.equal(state.failed, false)
+  assert.equal(state.draft, 'keep my draft')
+  assert.equal(state.removed, 0, 'hiding does not remove a stored candidate')
+  assert.equal(state.invalidations, 1, 'hiding invalidates the current request id')
+}
+
+// A store notification after the failure is closed must not resurrect an old
+// candidate, but a later explicit request may restore normal updates.
+const applyStart = stripSource.indexOf('        const apply = () => {')
+const applyEnd = stripSource.indexOf('        apply()', applyStart)
+assert(applyStart >= 0 && applyEnd > applyStart, 'store update callback exists')
+{
+  const state = { pending: null, busy: false }
+  const refs = {
+    sessionId: 'close-regression', hiddenFailureRef: { current: 'close-regression' },
+    suggestionBySession: new Map([['close-regression', { text: 'old candidate' }]]),
+    pendingBySession: new Map(),
+    setPending(value) { state.pending = value }, setBusy(value) { state.busy = value },
+  }
+  const apply = runInNewContext(`(() => {${stripSource.slice(applyStart, applyEnd)}; return apply })()`, refs)
+  apply()
+  assert.equal(state.pending, null, 'a store notification cannot reopen a closed failure strip')
+  refs.hiddenFailureRef.current = undefined
+  apply()
+  assert.equal(state.pending.text, 'old candidate', 'a later request can restore stored candidates')
+}
+
+// Closing while an older request is settling must prevent that continuation
+// from bringing the bar or its error back after the close action.
+const hideStart = stripSource.indexOf('      const hideFailure = () => {')
+const hideEnd = stripSource.indexOf('      const ask = async', hideStart)
+const askEnd = stripSource.indexOf('      // Auto prediction:', hideEnd)
+assert(hideStart >= 0 && hideEnd > hideStart && askEnd > hideEnd, 'close and ask callbacks exist')
+{
+  let release
+  const state = { pending: null, busy: false, failed: false, cleared: '' }
+  const refs = {
+    sessionId: 'close-regression', sessionIdRef: { current: 'close-regression' },
+    hiddenFailureRef: { current: undefined }, visibilityEpochRef: { current: 0 },
+    suggestionBySession: new Map([['close-regression', { text: 'old candidate' }]]),
+    pendingBySession: new Map(), failureStore: { reason: 'error', at: Date.now() + 1000 },
+    listeners: new Set(), reportProbe() {},
+    runRequest: () => new Promise(resolve => { release = resolve }),
+    setPending(value) { state.pending = value }, setBusy(value) { state.busy = value },
+    setFailed(value) { state.failed = value },
+    clear(via) { state.cleared = via; state.pending = null; state.busy = false; state.failed = false },
+  }
+  const callbacks = runInNewContext(
+    `(() => {${stripSource.slice(hideStart, askEnd)}; return { hideFailure, ask } })()`, refs)
+  const settling = callbacks.ask('next', '', 'manual')
+  callbacks.hideFailure()
+  assert.equal(state.cleared, 'hide')
+  release(null)
+  await settling
+  assert.equal(state.pending, null, 'late completion cannot restore an old candidate')
+  assert.equal(state.busy, false)
+  assert.equal(state.failed, false, 'late completion cannot restore the failure')
+  assert.equal(refs.hiddenFailureRef.current, 'close-regression')
+  assert.equal(refs.failureStore.reason, 'error', 'closing does not erase settings-page failure history')
+
+  refs.failureStore.reason = ''
+  refs.suggestionBySession.set('close-regression', { text: 'new candidate' })
+  const fresh = callbacks.ask('next', '', 'manual')
+  assert.equal(refs.hiddenFailureRef.current, undefined, 'a new request reopens the strip')
+  release(null)
+  await fresh
+  assert.equal(state.pending.text, 'new candidate', 'a fresh request remains able to display results')
+}
+
 clientSource = clientSource.replace("      inject: ['slots'", "      checks: { runRequest, trackDraft, suggestionBySession, pendingBySession, nextRequestId, settingsStore, sourceMatches, failureStore, failureOf, publishFailure, clearFailure, reportProbe },\n      inject: ['slots'")
 runInNewContext(clientSource, sandbox)
 const legacyRecord = { kind: 'next', text: 'KEEP', draftAt: '', source: 'cut-1' }
