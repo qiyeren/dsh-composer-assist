@@ -373,31 +373,8 @@ for (const change of ['phase', 'session', 'revision', 'unmount', 'none']) {
   assert.deepEqual(writes, change === 'none' ? ['prefixsuffix'] : [], `accept guard: ${change}`)
 }
 
-// Execute the actual polish callback; intervening edits cannot be overwritten.
-const polishStart = clientSource.indexOf('    function PolishButton(')
-const runStart = clientSource.indexOf('      const run = async () => {', polishStart)
-const runEnd = clientSource.indexOf("      return h('button'", runStart)
-assert(polishStart >= 0 && runStart > polishStart && runEnd > runStart)
-for (const change of ['edit', 'session', 'phase', 'unmount', 'none']) {
-  const writes = []
-  let release, id = 0
-  const refs = {
-    idle: true, sessionId: 'a', draft: 'original', mounted: { current: true },
-    live: { current: { sessionId: 'a', draft: 'original', phase: 'plain' } },
-    draftBySession: new Map([['a', { revision: 1 }]]), nextRequestId: () => ++id, currentRequestId: () => id,
-    setBusy: () => {}, setFailed: () => {}, sourceMatches: async () => true,
-    request: () => new Promise(resolve => { release = resolve }), inputActions: { setDraft: value => writes.push(value) },
-  }
-  const run = runInNewContext(`(() => {${clientSource.slice(runStart, runEnd)}; return run })()`, refs)
-  const completion = run()
-  if (change === 'edit') { refs.live.current.draft = 'new input'; refs.draftBySession.set('a', { revision: 2 }) }
-  if (change === 'session') refs.live.current.sessionId = 'b'
-  if (change === 'phase') refs.live.current.phase = 'composing'
-  if (change === 'unmount') refs.mounted.current = false
-  release({ text: 'polished', source: 'cut-1' })
-  await completion
-  assert.deepEqual(writes, change === 'none' ? ['polished'] : [], `polish guard: ${change}`)
-}
+// Polish now previews instead of directly writing the draft. Its interaction,
+// stale-draft and session guards are exercised by tests/polish-client.test.mjs.
 
 // Low reasoning is chosen only from supported controls; stream errors reject partial text.
 for (const supported of [true, false]) {

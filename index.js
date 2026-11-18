@@ -192,6 +192,20 @@ async function readSettings() {
   }
 }
 
+/** Polishing fails closed on damaged/unreadable settings; a missing file is a fresh install. */
+async function readPolishSettings() {
+  let content
+  try {
+    content = await readFile(settingsFile(), 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { ...DEFAULTS }
+    throw error
+  }
+  const parsed = JSON.parse(content)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid settings')
+  return sanitizeSettings({ ...DEFAULTS, ...parsed })
+}
+
 /** One place that decides every accepted settings value. */
 function sanitizeSettings(next) {
   next.enabled = next.enabled === true
@@ -425,7 +439,7 @@ async function abortable(work, signal) {
 const runningCalls = new Map()
 
 /** One auxiliary request against the resolved route; returns the assembled text. */
-async function generate(ctx, session, settings, system, prompt, signal, key) {
+async function generate(ctx, session, settings, system, prompt, signal, key, isPolish = false) {
   const route = resolveRoute(ctx, session, settings)
   if (route === undefined) throw new Error('没有可用的模型路由：请先在设置里选择模型')
   // Mark this session as carrying our own auxiliary request for the whole call.
@@ -433,7 +447,7 @@ async function generate(ctx, session, settings, system, prompt, signal, key) {
   const marker = (predictingIn.get(sessionKey) ?? 0) + 1
   predictingIn.set(sessionKey, marker)
   try {
-    const work = runAuxiliary(ctx, session, settings, system, prompt, signal, route)
+    const work = runAuxiliary(ctx, session, settings, system, prompt, signal, route, isPolish)
     runningCalls.set(key, work)
     const release = () => { if (runningCalls.get(key) === work) runningCalls.delete(key) }
     void work.then(release, release)
@@ -446,7 +460,7 @@ async function generate(ctx, session, settings, system, prompt, signal, key) {
 }
 
 /** The auxiliary model call itself, run while the session carries our marker. */
-async function runAuxiliary(ctx, session, settings, system, prompt, signal, route) {
+async function runAuxiliary(ctx, session, settings, system, prompt, signal, route, isPolish = false) {
   const call = await ctx.llm.prepareCall({ ...route, maxTokens: settings.maxOutputTokens }, signal, (controls, model) => {
     const low = model.reasoning?.efforts.find(effort => effort.id === 'low')
     return low === undefined ? controls : { ...controls, reasoningEffort: low.id }
@@ -460,14 +474,48 @@ async function runAuxiliary(ctx, session, settings, system, prompt, signal, rout
     signal,
   }
   let text = ''
+  let stopped = false
+  // Match the Host's BlockAssembler: indices keep first-seen order, and the
+  // first block-end is authoritative over accumulated deltas for that index.
+  const blocks = new Map()
+  const blockAt = (index, type) => {
+    const key = index ?? 0
+    if (!blocks.has(key)) blocks.set(key, { type, text: '', block: null })
+    return blocks.get(key)
+  }
   for await (const chunk of call.stream(options)) {
     signal.throwIfAborted()
-    if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
-      throw new Error(chunk.reason.failure.message)
+    if (isPolish && (stopped || chunk.type === 'tool-call-delta'
+      || (chunk.type === 'block-start' && chunk.blockType === 'tool-call')
+      || (chunk.type === 'block-end' && chunk.block?.type === 'tool-call'))) {
+      throw new Error('润色未正常完成')
     }
-    if (chunk.type === 'text-delta') text += chunk.text
+    if (chunk.type === 'finish') {
+      if (isPolish) {
+        if (chunk.reason?.kind !== 'stop') throw new Error('润色未正常完成')
+        stopped = true
+      } else if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') {
+        throw new Error(chunk.reason.failure.message)
+      }
+    }
+    if (isPolish) {
+      if (chunk.type === 'block-start') blockAt(chunk.index, chunk.blockType)
+      else if (chunk.type === 'text-delta') {
+        const block = blockAt(chunk.index, 'text')
+        if (block.block === null) block.text += chunk.text
+      } else if (chunk.type === 'reasoning-delta') blockAt(chunk.index, 'reasoning')
+      else if (chunk.type === 'block-end') {
+        const block = blockAt(chunk.index, chunk.block.type)
+        if (block.block === null) block.block = chunk.block
+      }
+    } else if (chunk.type === 'text-delta') text += chunk.text
   }
-  return clean(text)
+  if (isPolish && !stopped) throw new Error('润色未正常完成')
+  if (!isPolish) return clean(text)
+  return [...blocks.values()].map(({ type, text: deltaText, block }) => {
+    if (block !== null) return block.type === 'text' ? block.text : ''
+    return type === 'text' ? deltaText : ''
+  }).join('')
 }
 
 /**
@@ -704,69 +752,115 @@ export function apply(ctx) {
           if (latestRequests.get(key) === ticket) latestRequests.delete(key)
           return reply(data)
         }
-        const settings = await readSettings()
-        const draft = typeof body.draft === 'string' ? body.draft : ''
-        const history = transcript(session, settings.maxInputChars)
-        const basePrompt = buildPrompt(kind, draft, history)
-        // Only keep the transcript report while diagnostics are on, and never
-        // store user text: just counts and lengths.
-        if (settings.diagnostics === true) {
-          lastTranscript = {
-            at: Date.now(), sessionId: session.id, kind,
-            messages: session.deriveMessages().length,
-            chars: history.length,
-            seq: String(session.seq),
-          }
-        } else {
-          lastTranscript = null
-        }
-        if (basePrompt === undefined) {
-          // Name the reason: an empty transcript and a model that answered nothing
-          // look identical to the client, and they need different fixes.
-          return discard({ ok: true, text: '', reason: kind === 'next' && history === '' ? 'empty-transcript' : 'empty-input' })
-        }
-        // Acceptance learning appends one style sentence when it has enough signal;
-        // it is opt-in and off by default.
-        const hint = settings.learn === true ? learnHint(settings.learnStats) : ''
-        // Workspace context: recent files, plus git state only when explicitly
-        // opted in. Best-effort — a missing service, an unreadable directory, or a
-        // slow git call all degrade to no context instead of failing the suggestion.
-        if (stale()) return discard({ ok: true, text: '', reason: 'stale-source' })
         const abort = new AbortController()
-        inflight.set(key, abort)
-        const timer = setTimeout(() => abort.abort(new DOMException('Suggestion timed out', 'TimeoutError')), settings.timeoutMs)
+        const onRequestAbort = () => abort.abort(request.signal.reason)
+        if (kind === 'polish') {
+          inflight.set(key, abort)
+          request.signal.addEventListener('abort', onRequestAbort, { once: true })
+          if (request.signal.aborted) onRequestAbort()
+        }
         try {
-          const previous = runningCalls.get(key)
-          if (previous !== undefined) await abortable(() => previous.catch(() => {}), abort.signal)
-          const context = await abortable(async () => {
+          let settings
+          if (kind === 'polish') {
             try {
-              return await workspaceContext(
-                { fs: scoped.get('fs'), subprocess: scoped.get('subprocess') },
-                scoped.get('workingDirectory')?.get(session), 8,
-                { gitContext: settings.gitContext })
-            } catch { return '' }
-          }, abort.signal)
-          if (settings.diagnostics === true && lastTranscript !== null) lastTranscript.workspaceChars = context.length
-          const prompt = [basePrompt, hint, context].filter((part) => part !== '').join('\n\n')
-          if (stale()) return reply({ ok: true, text: '', reason: 'stale-source' })
-          const raw = await generate(scoped, session, settings, SYSTEM[kind], prompt, abort.signal, key)
-          if (stale() || abort.signal.aborted) return reply({ ok: true, text: '', reason: 'stale-source' })
-          if (raw === '') return reply({ ok: true, text: '', reason: 'model-empty', transcriptChars: history.length })
-          if (kind === 'next') {
-            const { candidates, confidence } = parseCandidates(raw)
-            if (candidates.length === 0) return reply({ ok: true, text: '', reason: 'model-empty' })
-            const bar = settings.minConfidence ?? 0
-            if (confidence !== null && bar > 0 && confidence < bar) {
-              return reply({ ok: true, text: '', confidence, reason: 'low-confidence' })
+              // Serialize with this Host's settings writers, not other processes.
+              settings = await abortable(() => withSettings(() => {
+                abort.signal.throwIfAborted()
+                return readPolishSettings()
+              }), abort.signal)
+            } catch {
+              if (abort.signal.aborted) return discard({ ok: true, text: '', reason: 'stale-source' })
+              return discard({ ok: false, error: '无法读取润色设置' })
             }
-            return reply({ ok: true, text: candidates[0], candidates, confidence })
+          } else {
+            settings = await readSettings()
           }
-          return reply({ ok: true, text: raw })
-        } catch (error) {
-          if (abort.signal.aborted) return reply({ ok: true, text: '', reason: abort.signal.reason?.name === 'TimeoutError' ? 'timeout' : 'stale-source' })
-          return reply({ ok: false, error: error instanceof Error ? error.message : String(error) })
+          if (kind === 'polish' && settings.enabled !== true) return discard({ ok: true, text: '', reason: 'disabled' })
+          const draft = typeof body.draft === 'string' ? body.draft : ''
+          if (kind === 'polish' && draft.trim() === '') return discard({ ok: true, text: '', reason: 'empty-input' })
+          // Polishing is deliberately draft-only: do not even collect the session
+          // transcript, including for diagnostics, when preparing this request.
+          const history = kind === 'polish' ? '' : transcript(session, settings.maxInputChars)
+          const basePrompt = buildPrompt(kind, draft, history)
+          // Only keep the transcript report while diagnostics are on, and never
+          // store user text: just counts and lengths.
+          if (kind !== 'polish') {
+            if (settings.diagnostics === true) {
+              lastTranscript = {
+                at: Date.now(), sessionId: session.id, kind,
+                messages: session.deriveMessages().length,
+                chars: history.length,
+                seq: String(session.seq),
+              }
+            } else {
+              lastTranscript = null
+            }
+          }
+          if (basePrompt === undefined) {
+            // Name the reason: an empty transcript and a model that answered nothing
+            // look identical to the client, and they need different fixes.
+            return discard({ ok: true, text: '', reason: kind === 'next' && history === '' ? 'empty-transcript' : 'empty-input' })
+          }
+          // Acceptance learning appends one style sentence when it has enough signal;
+          // it is opt-in and off by default.
+          const hint = kind !== 'polish' && settings.learn === true ? learnHint(settings.learnStats) : ''
+          // Workspace context: recent files, plus git state only when explicitly
+          // opted in. Best-effort — a missing service, an unreadable directory, or a
+          // slow git call all degrade to no context instead of failing the suggestion.
+          if (stale()) return discard({ ok: true, text: '', reason: 'stale-source' })
+          inflight.set(key, abort)
+          const timer = setTimeout(() => abort.abort(new DOMException('Suggestion timed out', 'TimeoutError')), settings.timeoutMs)
+          try {
+            const previous = runningCalls.get(key)
+            if (previous !== undefined) await abortable(() => previous.catch(() => {}), abort.signal)
+            const context = kind === 'polish' ? '' : await abortable(async () => {
+              try {
+                return await workspaceContext(
+                  { fs: scoped.get('fs'), subprocess: scoped.get('subprocess') },
+                  scoped.get('workingDirectory')?.get(session), 8,
+                  { gitContext: settings.gitContext })
+              } catch { return '' }
+            }, abort.signal)
+            if (kind !== 'polish' && settings.diagnostics === true && lastTranscript !== null) lastTranscript.workspaceChars = context.length
+            const prompt = [basePrompt, hint, context].filter((part) => part !== '').join('\n\n')
+            if (stale()) return reply({ ok: true, text: '', reason: 'stale-source' })
+            if (kind === 'polish') {
+              try {
+                // A previous owned call can take time to drain. Recheck after
+                // that wait without extending this request's existing deadline.
+                settings = await abortable(() => withSettings(() => {
+                  abort.signal.throwIfAborted()
+                  return readPolishSettings()
+                }), abort.signal)
+              } catch (error) {
+                if (abort.signal.aborted) throw error
+                return reply({ ok: false, error: '无法读取润色设置' })
+              }
+              if (stale()) return reply({ ok: true, text: '', reason: 'stale-source' })
+              abort.signal.throwIfAborted()
+              if (settings.enabled !== true) return reply({ ok: true, text: '', reason: 'disabled' })
+            }
+            const raw = await generate(scoped, session, settings, SYSTEM[kind], prompt, abort.signal, key, kind === 'polish')
+            if (stale() || abort.signal.aborted) return reply({ ok: true, text: '', reason: 'stale-source' })
+            if (raw === '' || (kind === 'polish' && raw.trim() === '')) return reply({ ok: true, text: '', reason: 'model-empty', transcriptChars: history.length })
+            if (kind === 'next') {
+              const { candidates, confidence } = parseCandidates(raw)
+              if (candidates.length === 0) return reply({ ok: true, text: '', reason: 'model-empty' })
+              const bar = settings.minConfidence ?? 0
+              if (confidence !== null && bar > 0 && confidence < bar) {
+                return reply({ ok: true, text: '', confidence, reason: 'low-confidence' })
+              }
+              return reply({ ok: true, text: candidates[0], candidates, confidence })
+            }
+            return reply({ ok: true, text: raw })
+          } catch (error) {
+            if (abort.signal.aborted) return reply({ ok: true, text: '', reason: abort.signal.reason?.name === 'TimeoutError' ? 'timeout' : 'stale-source' })
+            return reply({ ok: false, error: error instanceof Error ? error.message : String(error) })
+          } finally {
+            clearTimeout(timer)
+          }
         } finally {
-          clearTimeout(timer)
+          if (kind === 'polish') request.signal.removeEventListener('abort', onRequestAbort)
           if (inflight.get(key) === abort) inflight.delete(key)
           if (latestRequests.get(key) === ticket) latestRequests.delete(key)
         }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-composer-assist",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "type": "module",
   "description": "Community-maintained fork of Lphehe/dsh-composer-assist (upstream inactive): fixes the 2026-10-23 review bugs. Context-aware composer predictions, draft completion, prompt polishing, per-session suggestions and stale-response protection.",
   "license": "SEE LICENSE IN LICENSE",

@@ -42,7 +42,26 @@ window.__ModuleLoader__.load({
       'polish.short': '润色',
       'polish.title': '润色提示词',
       'polish.busy': '润色中…',
-      'polish.failed': '润色失败',
+      'polish.failed': '润色失败，请重试。',
+      'polish.preview': '润色预览',
+      'polish.original': '原稿',
+      'polish.result': '润色结果',
+      'polish.copy': '复制结果',
+      'polish.copied': '已复制结果，草稿未更改。',
+      'polish.copyFailed': '无法访问剪贴板，请选中结果手动复制。',
+      'polish.close': '关闭',
+      'polish.retry': '重试',
+      'polish.retryDraft': '请先填写草稿，再重试。',
+      'polish.retryWait': '请等待当前操作完成，再重试。',
+      'polish.unchanged': '预览与复制都是纯文本；附件内容及引用的语义结构不参与润色，引用仅以文本呈现。手动粘贴替换可能丢失结构；原稿未更改，也不会自动发送。',
+      'polish.disabled': '润色已禁用，请先在设置中启用。',
+      'polish.timeout': '润色超时，请重试。',
+      'polish.emptyInput': '草稿为空，请输入内容后重试。',
+      'polish.emptyResult': '模型没有返回润色结果，请重试。',
+      'polish.changed': '会话或输入已变化，请重新润色。',
+      'polish.unsupported': '当前宿主无法验证草稿变化，请升级后重试。',
+      'polish.unavailable': '润色预览暂不可用，请重试。',
+      'polish.ambiguous': '当前会话有多个输入视图，请关闭重复视图后重试。',
       'settings.title': '输入框预测',
       'settings.description': '在输入框上方预测你想输入的内容、补全草稿，或点 ✨ 润色提示词。',
       'settings.enabled': '启用',
@@ -112,7 +131,26 @@ window.__ModuleLoader__.load({
       'polish.short': 'Polish',
       'polish.title': 'Polish prompt',
       'polish.busy': 'Polishing…',
-      'polish.failed': 'Polish failed',
+      'polish.failed': 'Polishing failed. Please try again.',
+      'polish.preview': 'Polish preview',
+      'polish.original': 'Original draft',
+      'polish.result': 'Polished result',
+      'polish.copy': 'Copy result',
+      'polish.copied': 'Result copied; the draft was not changed.',
+      'polish.copyFailed': 'Clipboard unavailable. Select the result and copy it manually.',
+      'polish.close': 'Close',
+      'polish.retry': 'Retry',
+      'polish.retryDraft': 'Enter a draft before retrying.',
+      'polish.retryWait': 'Wait for the current operation to finish before retrying.',
+      'polish.unchanged': 'Preview and copy are plain text. Attachment contents and the semantic structure of references are not polished; references appear as text only. Manually pasting over the draft may lose structure. The original draft is unchanged and will not be sent automatically.',
+      'polish.disabled': 'Polishing is disabled. Enable it in settings first.',
+      'polish.timeout': 'Polishing timed out. Please try again.',
+      'polish.emptyInput': 'The draft is empty. Enter text and try again.',
+      'polish.emptyResult': 'The model returned no polished result. Please try again.',
+      'polish.changed': 'The session or input changed. Polish again.',
+      'polish.unsupported': 'This host cannot verify draft changes. Please upgrade and retry.',
+      'polish.unavailable': 'Polish preview is unavailable. Please try again.',
+      'polish.ambiguous': 'Multiple input views are open for this session. Close duplicate views and retry.',
       'settings.title': 'Composer prediction',
       'settings.description': 'Predict what you are about to type, complete a draft, or polish it with ✨.',
       'settings.enabled': 'Enabled',
@@ -200,12 +238,19 @@ window.__ModuleLoader__.load({
       return body
     }
 
-    async function withTimeout(work, milliseconds) {
+    async function withTimeout(work, milliseconds, cancellation) {
       const abort = new AbortController()
-      let timer
+      let timer, cancel
       try {
         return await Promise.race([
           new Promise((_, reject) => {
+            cancel = () => {
+              const error = new DOMException('Suggestion cancelled', 'AbortError')
+              abort.abort(error)
+              reject(error)
+            }
+            if (cancellation?.aborted) { cancel(); return }
+            cancellation?.addEventListener('abort', cancel, { once: true })
             timer = setTimeout(() => {
               const error = new DOMException('Suggestion timed out', 'TimeoutError')
               abort.abort(error)
@@ -214,10 +259,13 @@ window.__ModuleLoader__.load({
           }),
           work(abort.signal),
         ])
-      } finally { clearTimeout(timer) }
+      } finally {
+        clearTimeout(timer)
+        cancellation?.removeEventListener('abort', cancel)
+      }
     }
 
-    async function request(kind, sessionId, draft, revision, source) {
+    async function request(kind, sessionId, draft, revision, source, cancellation) {
       const configured = settingsStore.value?.timeoutMs
       const deadline = Number.isFinite(configured) ? Math.max(2000, Math.min(120000, configured)) : 20000
       return withTimeout(async (signal) => {
@@ -242,13 +290,16 @@ window.__ModuleLoader__.load({
           return { text: '', candidates: [], confidence: null, reason: 'stale-source' }
         }
         signal.throwIfAborted()
+        // Polish is a single exact response, not a prediction candidate list.
+        // Preserve the Host's text byte-for-byte, including fences and whitespace.
+        if (kind === 'polish') return { text, candidates: [], confidence: null, source: body.source }
         const candidates = Array.isArray(body.candidates)
           ? body.candidates.filter(item => typeof item === 'string' && item.trim() !== '').slice(0, 3)
           : []
         if (candidates.length === 0 && text !== '') candidates.push(text)
         const confidence = Number.isFinite(body.confidence) && body.confidence >= 0 && body.confidence <= 1 ? body.confidence : null
         return { text: candidates[0] ?? '', candidates, confidence, source: body.source }
-      }, deadline + 1000)
+      }, deadline + 1000, cancellation)
     }
 
     /**
@@ -1204,57 +1255,287 @@ window.__ModuleLoader__.load({
         h('span', { key: 'label' }, t('predict.short'))])
     }
 
-    /** ✨ button in the composer tool row; rewrites the current draft into it. */
-    function PolishButton({ sessionId, useInput, inputActions, t }) {
-      const draft = useInput(state => state.draft)
-      const phase = useInput(state => state.phase)
-      trackDraft(sessionId, draft)
-      const live = useRef({ sessionId, draft, phase })
-      live.current = { sessionId, draft, phase }
-      const mounted = useRef(true)
-      useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-      const [busy, setBusy] = useState(false)
-      const [failed, setFailed] = useState(false)
-      const idle = draft.trim() !== '' && phase === 'plain' && !busy
+    // The dock owns transient preview state. The in-memory channel is scoped to
+    // mounted slots and is never written to browser storage.
+    const polishChannels = new Map()
+    const polishTriggers = new Map()
+    const polishListeners = new Set()
+    function registerPolish(map, sessionId, owner) {
+      let owners = map.get(sessionId)
+      if (owners === undefined) { owners = new Set(); map.set(sessionId, owners) }
+      owners.add(owner)
+    }
+    function unregisterPolish(map, sessionId, owner) {
+      const owners = map.get(sessionId)
+      owners?.delete(owner)
+      if (owners?.size === 0) map.delete(sessionId)
+    }
+    function uniquePolish(map, sessionId) {
+      const owners = map.get(sessionId)
+      return owners?.size === 1 ? owners.values().next().value : undefined
+    }
+    function ambiguousPolish(sessionId) {
+      return (polishChannels.get(sessionId)?.size ?? 0) > 1 || (polishTriggers.get(sessionId)?.size ?? 0) > 1
+    }
+    function discardAmbiguousPolish(sessionId) {
+      if (!ambiguousPolish(sessionId)) return
+      for (const owner of polishChannels.get(sessionId) ?? []) owner.abandon?.()
+    }
+    function publishPolish() {
+      for (const listener of [...polishListeners]) { try { listener() } catch { /* detached slot */ } }
+    }
 
-      const run = async () => {
-        if (!idle) return
-        const id = nextRequestId(sessionId)
-        const revision = draftBySession.get(sessionId).revision
-        const unchanged = () => mounted.current && live.current.sessionId === sessionId
-          && live.current.draft === draft && live.current.phase === 'plain'
-          && draftBySession.get(sessionId)?.revision === revision && currentRequestId(sessionId) === id
-        setBusy(true); setFailed(false)
+    function samePolishInput(a, b) {
+      return a?.sessionId === b.sessionId && a.draft === b.draft && a.draftRev === b.draftRev
+        && a.phase === b.phase && a.attachments === b.attachments
+    }
+
+    /** The flow-allocated dock keeps the complete result selectable, without writing the editor. */
+    function PolishPreview({ sessionId, useInput, inputActions, t }) {
+      const draft = useInput(state => state.draft)
+      const draftRev = useInput(state => state.draftRev)
+      const phase = useInput(state => state.phase)
+      const attachmentIds = useInput(state => state.attachmentIds)
+      const attachmentsValid = Array.isArray(attachmentIds) && attachmentIds.every(id => typeof id === 'string')
+      const snapshot = {
+        sessionId, draft, draftRev, phase,
+        attachments: attachmentsValid ? JSON.stringify(attachmentIds) : undefined,
+      }
+      const control = useRef({ sessionId, snapshot, generation: 0, sequence: 0, active: null, mounted: false })
+      const c = control.current
+      if (!samePolishInput(c.snapshot, snapshot)) {
+        c.snapshot = snapshot
+        c.generation += 1
+        c.sequence += 1
+      }
+      c.sessionId = sessionId
+      const generation = c.generation
+      const [view, setView] = useState(null)
+      const panel = useRef(null)
+      const wasOpen = useRef(false)
+
+      const cancel = () => {
+        c.sequence += 1
+        c.active?.abort()
+        c.active = null
+        publishPolish()
+      }
+      const abandon = () => {
+        cancel()
+        if (c.mounted) setView(null)
+      }
+      const close = () => {
+        abandon()
+        uniquePolish(polishTriggers, sessionId)?.current?.focus?.()
+      }
+      // Unlike a React render snapshot, this public editor action reads the live
+      // revision synchronously without modifying the document or the clipboard.
+      const verifyRevision = revision => {
         try {
-          const { text } = await request('polish', sessionId, draft, revision)
-          if (text !== '' && unchanged()) inputActions.setDraft(text)
-        } catch {
-          if (unchanged()) setFailed(true)
+          if (typeof inputActions?.captureInsertion !== 'function') return 'unsupported'
+          const current = inputActions.captureInsertion()?.draftRev
+          if (!Number.isSafeInteger(current) || current < 0) return 'unsupported'
+          return current === revision ? '' : 'changed'
+        } catch { return 'unsupported' }
+      }
+      const ownsPair = () => uniquePolish(polishChannels, sessionId) === c
+        && uniquePolish(polishTriggers, sessionId) !== undefined
+      const run = async () => {
+        const at = c.snapshot
+        if (!c.mounted || !ownsPair() || c.active !== null || typeof at.draft !== 'string' || at.draft.trim() === ''
+          || at.phase !== 'plain' || !at.sessionId) return
+        const ownerGeneration = c.generation
+        const seq = ++c.sequence
+        if (!Number.isSafeInteger(at.draftRev) || at.draftRev < 0 || at.attachments === undefined) {
+          setView({ generation: ownerGeneration, status: 'error', reason: 'unsupported' })
+          return
+        }
+        const preflight = verifyRevision(at.draftRev)
+        if (preflight !== '') {
+          setView({ generation: ownerGeneration, status: 'error', reason: preflight })
+          return
+        }
+        const abort = new AbortController()
+        c.active = abort
+        setView({ generation: ownerGeneration, status: 'busy' })
+        publishPolish()
+        const current = () => c.mounted && ownsPair() && c.sequence === seq && c.generation === ownerGeneration
+          && c.sessionId === at.sessionId
+        try {
+          const result = await request('polish', at.sessionId, at.draft, seq, undefined, abort.signal)
+          if (!current()) return
+          const recheck = verifyRevision(at.draftRev)
+          if (recheck !== '') {
+            setView({ generation: ownerGeneration, status: 'error', reason: recheck })
+            return
+          }
+          if (result.text.trim() === '') {
+            let reason = 'failed'
+            if (result.reason === 'disabled') reason = 'disabled'
+            else if (result.reason === 'timeout') reason = 'timeout'
+            else if (result.reason === 'empty-input') reason = 'emptyInput'
+            else if (result.reason === 'model-empty' || result.reason === undefined) reason = 'emptyResult'
+            else if (result.reason === 'stale-source') reason = 'changed'
+            setView({ generation: ownerGeneration, status: 'error', reason })
+          } else {
+            setView({ generation: ownerGeneration, status: 'ready', original: at.draft, text: result.text, copyStatus: '' })
+          }
+        } catch (error) {
+          if (current()) setView({ generation: ownerGeneration, status: 'error',
+            reason: verifyRevision(at.draftRev) || (failureOf(error) === 'timeout' ? 'timeout' : 'failed') })
         } finally {
-          if (mounted.current) setBusy(false)
+          if (c.active === abort) { c.active = null; publishPolish() }
         }
       }
+      c.run = run
+      c.abandon = abandon
 
-      return h('button', {
-        type: 'button',
-        onClick: () => { void run() },
-        disabled: !idle,
-        title: failed ? t('polish.failed') : busy ? t('polish.busy') : t('polish.title'),
-        'aria-label': t('polish.title'),
-        style: {
-          display: 'inline-flex', alignItems: 'center', gap: '4px',
-          cursor: idle ? 'pointer' : 'default',
-          // Idle is brand-tinted and readable; disabled stays visible but clearly inert.
-          border: idle ? '1px solid var(--dsw-alias-brand-primary)' : '1px solid var(--dsw-alias-border-l1)',
-          background: idle ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
-          color: failed ? 'var(--dsw-alias-state-error-primary)'
-            : idle ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
-          borderRadius: '6px', padding: '2px 6px', minHeight: '24px',
-          fontSize: '12px', fontWeight: '600', lineHeight: '1.5',
-          whiteSpace: 'nowrap',
+      useEffect(() => {
+        c.mounted = true
+        registerPolish(polishChannels, sessionId, c)
+        discardAmbiguousPolish(sessionId)
+        publishPolish()
+        return () => {
+          c.mounted = false
+          cancel()
+          unregisterPolish(polishChannels, sessionId, c)
+          publishPolish()
+        }
+      }, [sessionId])
+      useEffect(() => {
+        if (view !== null && view.generation !== generation) {
+          cancel()
+          setView({ generation, status: 'error', reason: 'changed' })
+        }
+      }, [generation, view])
+      useEffect(() => {
+        if (view !== null && !wasOpen.current) panel.current?.focus?.()
+        wasOpen.current = view !== null
+      }, [view !== null])
+
+      if (view === null) return null
+      // Never show data from an earlier render, even before its cleanup effect runs.
+      const shown = view.generation === generation ? view : { status: 'error', reason: 'changed' }
+      const retryHint = phase !== 'plain' ? 'retryWait'
+        : typeof draft !== 'string' || draft.trim() === '' ? 'retryDraft' : ''
+      const guardResult = () => {
+        if (shown.status !== 'ready' || view.generation !== c.generation || !c.mounted || !ownsPair()) return false
+        const reason = verifyRevision(c.snapshot.draftRev)
+        if (reason === '') return true
+        cancel()
+        setView({ generation: c.generation, status: 'error', reason })
+        return false
+      }
+      const copy = async () => {
+        if (!guardResult()) return
+        const seq = c.sequence
+        try {
+          if (typeof navigator?.clipboard?.writeText !== 'function') throw new Error('clipboard unavailable')
+          await navigator.clipboard.writeText(shown.text)
+          if (c.mounted && c.sequence === seq && c.generation === view.generation) {
+            setView({ ...view, copyStatus: 'copied' })
+          }
+        } catch {
+          if (c.mounted && c.sequence === seq && c.generation === view.generation) {
+            setView({ ...view, copyStatus: 'copyFailed' })
+          }
+        }
+      }
+      const controlStyle = {
+        cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l1)',
+        background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)',
+        borderRadius: '6px', padding: '4px 10px', fontSize: '12px',
+      }
+      const contentStyle = {
+        margin: '4px 0 10px', padding: '8px', maxHeight: '18vh', overflowY: 'auto',
+        whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text',
+        background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)',
+        borderRadius: '6px', fontFamily: 'inherit', fontSize: '12px',
+      }
+      return h('section', {
+        ref: panel, tabIndex: -1, role: 'region', 'aria-label': t('polish.preview'),
+        'data-composer-assist-polish-preview': '',
+        onKeyDown: event => {
+          if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return
+          event.preventDefault(); event.stopPropagation(); close()
         },
-      }, [h('span', { key: 'icon', 'aria-hidden': true }, busy ? '\u22ef' : '✨'),
-        h('span', { key: 'label' }, t('polish.short'))])
+        style: { ...stripStyle, display: 'block', minWidth: 0, maxHeight: '55vh', overflowY: 'auto' },
+      },
+      h('strong', null, t('polish.preview')),
+      h('div', { style: { color: 'var(--dsw-alias-label-secondary)', margin: '4px 0' } }, t('polish.unchanged')),
+      h('div', { role: 'status', 'aria-live': 'polite' },
+        shown.status === 'busy' ? t('polish.busy')
+          : shown.status === 'error' ? t(`polish.${shown.reason}`)
+            : shown.copyStatus ? t(`polish.${shown.copyStatus}`) : ''),
+      shown.status === 'error' && retryHint !== '' && h('div', { role: 'status' }, t(`polish.${retryHint}`)),
+      shown.status === 'ready' && h('div', null,
+        h('strong', null, t('polish.original')),
+        h('pre', { style: contentStyle, tabIndex: 0, 'aria-label': t('polish.original') }, shown.original),
+        h('strong', null, t('polish.result')),
+        h('textarea', {
+          'aria-label': t('polish.result'), readOnly: true, value: shown.text, rows: 5,
+          onFocus: () => { guardResult() },
+          onCopy: event => { if (!guardResult()) event.preventDefault() },
+          style: { ...contentStyle, boxSizing: 'border-box', display: 'block', width: '100%', resize: 'vertical' },
+        })),
+      h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' } },
+        shown.status === 'ready' && h('button', { type: 'button', style: controlStyle, onClick: () => { void copy() } }, t('polish.copy')),
+        shown.status === 'error' && h('button', {
+          type: 'button', style: controlStyle, disabled: retryHint !== '',
+          onClick: () => { if (retryHint === '') void run() },
+        }, t('polish.retry')),
+        h('button', { type: 'button', style: controlStyle, onClick: close }, t('polish.close'))))
+    }
+
+    /** ✨ trigger; the separate dock owns all preview and request state. */
+    function PolishButton({ sessionId, useInput, t }) {
+      const draft = useInput(state => state.draft)
+      const phase = useInput(state => state.phase)
+      const [, refresh] = useState(0)
+      const [unavailable, setUnavailable] = useState(false)
+      const trigger = useRef(null)
+      useEffect(() => {
+        const listener = () => { refresh(value => value + 1) }
+        polishListeners.add(listener)
+        registerPolish(polishTriggers, sessionId, trigger)
+        discardAmbiguousPolish(sessionId)
+        publishPolish()
+        listener() // The dock may have registered after this button rendered.
+        return () => {
+          polishListeners.delete(listener)
+          unregisterPolish(polishTriggers, sessionId, trigger)
+          for (const owner of polishChannels.get(sessionId) ?? []) owner.abandon?.()
+          publishPolish()
+        }
+      }, [sessionId])
+      const channel = uniquePolish(polishChannels, sessionId)
+      const ambiguous = ambiguousPolish(sessionId)
+      const busy = channel?.sessionId === sessionId && channel.active !== null
+      const idle = typeof draft === 'string' && draft.trim() !== '' && phase === 'plain' && !busy
+      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
+        h('button', {
+          ref: trigger, type: 'button', 'aria-disabled': !idle,
+          onClick: () => {
+            if (!idle) return
+            const current = uniquePolish(polishChannels, sessionId)
+            if (ambiguousPolish(sessionId)) { setUnavailable(false); return }
+            if (uniquePolish(polishTriggers, sessionId) !== trigger
+              || current?.sessionId !== sessionId || !current.mounted) { setUnavailable(true); return }
+            setUnavailable(false); void current.run()
+          },
+          title: busy ? t('polish.busy') : t('polish.title'), 'aria-label': t('polish.title'),
+          style: {
+            display: 'inline-flex', alignItems: 'center', gap: '4px',
+            cursor: idle ? 'pointer' : 'default',
+            border: idle ? '1px solid var(--dsw-alias-brand-primary)' : '1px solid var(--dsw-alias-border-l1)',
+            background: idle ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            color: idle ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
+            borderRadius: '6px', padding: '2px 6px', minHeight: '24px',
+            fontSize: '12px', fontWeight: '600', lineHeight: '1.5', whiteSpace: 'nowrap',
+          },
+        }, h('span', { 'aria-hidden': true }, busy ? '\u22ef' : '✨'), h('span', null, t('polish.short'))),
+        (ambiguous || unavailable) && h('span', { role: 'status', style: { color: 'var(--dsw-alias-state-error-primary)' } },
+          t(ambiguous ? 'polish.ambiguous' : 'polish.unavailable')))
     }
 
     /** Full settings page in the left nav: switch, mode, model, and the numbers. */
@@ -1510,6 +1791,10 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: 'composer-assist-predict', order: 9, locale: NS,
         }, PredictButton))
+
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: 'composer-assist-polish-preview', order: 11, locale: NS,
+        }, PolishPreview))
 
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: 'composer-assist-polish', order: 10, locale: NS,
